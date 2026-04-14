@@ -83,6 +83,7 @@ async function shutdown(
 async function main(): Promise<void> {
   const env = loadEnv();
   const logger = createLogger(env);
+  logger.info({ env: env.NODE_ENV }, 'Environment loaded');
   setRedisLogger(logger);
   registerRedisShutdownHooks();
 

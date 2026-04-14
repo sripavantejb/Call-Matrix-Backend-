@@ -1,12 +1,24 @@
 import { randomUUID } from 'node:crypto';
 import Fastify from 'fastify';
 import { Redis } from 'ioredis';
+import mongoose from 'mongoose';
 import pino from 'pino';
 import type { Logger } from 'pino';
 import type { Env } from './config/env.js';
 import plugins from './plugins/index.js';
 import { getCache, setCache } from './utils/cache.js';
-import { sendSuccess } from './utils/response.js';
+import { sendError, sendSuccess } from './utils/response.js';
+
+const mongoTestSchema = new mongoose.Schema({
+  name: { type: String, required: true },
+});
+
+function getMongoTestModel(): mongoose.Model<{ name: string }> {
+  return (
+    (mongoose.models.Test as mongoose.Model<{ name: string }> | undefined) ??
+    mongoose.model<{ name: string }>('Test', mongoTestSchema)
+  );
+}
 
 declare module 'fastify' {
   interface FastifyInstance {
@@ -46,7 +58,35 @@ export async function buildApp(
   await fastify.register(plugins, { env });
 
   fastify.get('/health', async (_request, reply) => {
-    sendSuccess(reply, { status: 'ok' }, 'OK');
+    const mongo = mongoose.connection.readyState === 1;
+    const redisOk = redis !== null && redis.status === 'ready';
+    sendSuccess(
+      reply,
+      {
+        server: 'ok',
+        mongo,
+        redis: redisOk,
+      },
+      'OK',
+    );
+  });
+
+  fastify.get('/mongo-test', async (request, reply) => {
+    try {
+      const Test = getMongoTestModel();
+      const created = await Test.create({ name: 'test' });
+      const doc = await Test.findOne({ _id: created._id }).lean();
+      sendSuccess(reply, doc, 'Mongo test success');
+    } catch (err) {
+      request.log.error({ err }, 'mongo-test failed');
+      sendError(
+        reply,
+        err instanceof Error ? err.message : 'Mongo test failed',
+        'MONGO_TEST_ERROR',
+        err instanceof Error ? { message: err.message, stack: err.stack } : err,
+        500,
+      );
+    }
   });
 
   fastify.get('/redis-test', async (request, reply) => {
