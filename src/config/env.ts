@@ -4,25 +4,62 @@ import { fileURLToPath } from 'url';
 import { z } from 'zod';
 
 const envDir = dirname(fileURLToPath(import.meta.url));
-config({ path: join(envDir, '..', '..', '.env') });
-const envSchema = z.object({
-  PORT: z.coerce.number().int().positive().default(3000),
-  MONGO_URI: z
-    .string()
-    .min(1, 'MONGO_URI is required')
-    .url('MONGO_URI must be a valid URL'),
-  REDIS_URL: z
-    .string()
-    .min(1, 'REDIS_URL is required')
-    .url('REDIS_URL must be a valid URL'),
-  NODE_ENV: z.enum(['development', 'production', 'test']),
-  RATE_LIMIT_MAX: z.coerce.number().int().positive().default(100),
-  RATE_LIMIT_WINDOW_MS: z.coerce.number().int().positive().default(60_000),
-  CORS_ORIGIN: z.string().min(1).optional(),
-  /** Comma-separated DNS servers (e.g. `8.8.8.8,1.1.1.1`) for Node SRV lookups when `mongodb+srv://` fails with querySrv errors. */
-  MONGO_DNS_SERVERS: z.string().min(1).optional(),
-});
+config({ path: join(envDir, '..', '..', '.env'), override: true });
 
+const mongoUriSchema = z
+  .string()
+  .min(1, 'MONGO_URI is required')
+  .transform((s) => s.trim())
+  .refine(
+    (s) => s.startsWith('mongodb://') || s.startsWith('mongodb+srv://'),
+    'MONGO_URI must start with mongodb:// or mongodb+srv://',
+  );
+
+const redisUrlSchema = z
+  .string()
+  .min(1, 'REDIS_URL is required')
+  .transform((s) => s.trim())
+  .pipe(z.string().url('REDIS_URL must be a valid URL'));
+
+const envSchema = z.object({
+  PORT: z.coerce
+    .number({ invalid_type_error: 'PORT must be a number' })
+    .int()
+    .positive(),
+  HOST: z
+    .string()
+    .min(1, 'HOST is required')
+    .transform((s) => s.trim()),
+  NODE_ENV: z.enum(['development', 'production', 'test']),
+  MONGO_URI: mongoUriSchema,
+  REDIS_URL: redisUrlSchema,
+  RATE_LIMIT_MAX: z.coerce
+    .number({ invalid_type_error: 'RATE_LIMIT_MAX must be a number' })
+    .int()
+    .positive(),
+  RATE_LIMIT_WINDOW_MS: z.coerce
+    .number({ invalid_type_error: 'RATE_LIMIT_WINDOW_MS must be a number' })
+    .int()
+    .positive(),
+  CORS_ORIGIN: z.string().min(1).optional(),
+  MONGO_DNS_SERVERS: z.string().min(1).optional(),
+  /** If set, replaces `<db_password>` / `<password>` in MONGO_URI (URL-encoded). Safer for special characters than editing the URI. */
+  MONGO_PASSWORD: z
+    .string()
+    .optional()
+    .transform((s) => {
+      const t = s?.trim();
+      return t === '' || t === undefined ? undefined : t;
+    }),
+  /** If set, replaces `<db_username>` / `<username>` in MONGO_URI (URL-encoded). */
+  MONGO_USERNAME: z
+    .string()
+    .optional()
+    .transform((s) => {
+      const t = s?.trim();
+      return t === '' || t === undefined ? undefined : t;
+    }),
+});
 
 export type Env = z.infer<typeof envSchema>;
 

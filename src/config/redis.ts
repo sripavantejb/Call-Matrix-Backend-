@@ -1,73 +1,149 @@
 import { Redis } from 'ioredis';
 import type { Logger } from 'pino';
-import type { Env } from './env.js';
 
-const QUIT_TIMEOUT_MS = 10_000;
+const REDIS_RETRY_BASE_MS = 200;
+const REDIS_RETRY_MAX_MS = 30_000;
+const REDIS_QUIT_TIMEOUT_MS = 10_000;
 
-export function createRedisClient(
-  env: Env,
-  logger: Logger,
-): InstanceType<typeof Redis> {
-  const log = logger.child({ component: 'redis' });
+let appLogger: Logger | null = null;
+let shutdownHooksBound = false;
+let isClosing = false;
 
-  const client = new Redis(env.REDIS_URL, {
-    retryStrategy(times: number) {
-      return Math.min(times * 50, 2000);
-    },
+const redisUrl = process.env.REDIS_URL?.trim();
+
+function logInfo(message: string, payload?: Record<string, unknown>): void {
+  if (appLogger) {
+    appLogger.child({ component: 'redis' }).info(payload ?? {}, message);
+    return;
+  }
+  if (payload) {
+    console.info(message, payload);
+    return;
+  }
+  console.info(message);
+}
+
+function logWarn(message: string, payload?: Record<string, unknown>): void {
+  if (appLogger) {
+    appLogger.child({ component: 'redis' }).warn(payload ?? {}, message);
+    return;
+  }
+  if (payload) {
+    console.warn(message, payload);
+    return;
+  }
+  console.warn(message);
+}
+
+function logError(message: string, payload?: Record<string, unknown>): void {
+  if (appLogger) {
+    appLogger.child({ component: 'redis' }).error(payload ?? {}, message);
+    return;
+  }
+  if (payload) {
+    console.error(message, payload);
+    return;
+  }
+  console.error(message);
+}
+
+function getRetryDelay(times: number): number {
+  return Math.min(
+    REDIS_RETRY_BASE_MS * 2 ** Math.max(0, Math.min(times - 1, 10)),
+    REDIS_RETRY_MAX_MS,
+  );
+}
+
+function createClient(): InstanceType<typeof Redis> | null {
+  if (!redisUrl) {
+    logWarn('REDIS_URL is not configured; cache layer is disabled');
+    return null;
+  }
+
+  const client = new Redis(redisUrl, {
+    lazyConnect: true,
+    enableOfflineQueue: true,
     maxRetriesPerRequest: null,
-    enableOfflineQueue: false,
-    lazyConnect: false,
+    retryStrategy(times: number): number {
+      const delay = getRetryDelay(times);
+      logWarn('Redis reconnect attempt scheduled', { attempt: times, delayMs: delay });
+      return delay;
+    },
   });
 
   client.on('connect', () => {
-    log.info('Redis connected');
+    logInfo('Redis connection established');
   });
 
-  client.on('ready', () => {
-    log.debug('Redis ready');
+  client.on('error', (error: Error) => {
+    logError('Redis client error', { error });
   });
 
-  client.on('reconnecting', (delay: number) => {
-    log.warn({ delayMs: delay }, 'Redis reconnecting');
+  client.on('reconnecting', (delayMs: number) => {
+    logWarn('Redis reconnecting', { delayMs });
   });
 
-  client.on('error', (err: Error) => {
-    log.error({ err }, 'Redis client error');
-  });
-
-  client.on('close', () => {
-    log.warn('Redis connection closed');
-  });
-
-  client.on('end', () => {
-    log.info('Redis connection ended');
+  void client.connect().catch((error: unknown) => {
+    logError('Initial Redis connect failed; continuing without cache', { error });
   });
 
   return client;
 }
 
-export async function closeRedis(
-  client: InstanceType<typeof Redis>,
-  logger: Logger,
-): Promise<void> {
-  const log = logger.child({ component: 'redis' });
-  if (client.status === 'end') {
+export const redisClient: InstanceType<typeof Redis> | null = createClient();
+
+async function quitWithTimeout(client: InstanceType<typeof Redis>): Promise<void> {
+  const timeoutPromise = new Promise<never>((_, reject) => {
+    setTimeout(() => {
+      reject(new Error(`Redis quit timed out after ${REDIS_QUIT_TIMEOUT_MS}ms`));
+    }, REDIS_QUIT_TIMEOUT_MS);
+  });
+
+  await Promise.race([client.quit(), timeoutPromise]);
+}
+
+export function setRedisLogger(logger: Logger): void {
+  appLogger = logger;
+}
+
+export async function closeRedisConnection(): Promise<void> {
+  if (!redisClient || redisClient.status === 'end' || isClosing) {
     return;
   }
 
-  const quitPromise = client.quit();
-  const timeout = new Promise<never>((_, reject) => {
-    setTimeout(() => {
-      reject(new Error(`Redis quit timed out after ${QUIT_TIMEOUT_MS}ms`));
-    }, QUIT_TIMEOUT_MS);
+  isClosing = true;
+  try {
+    await quitWithTimeout(redisClient);
+    logInfo('Redis connection closed gracefully');
+  } catch (error) {
+    logWarn('Redis graceful quit failed; disconnecting forcefully', { error });
+    redisClient.disconnect();
+  } finally {
+    isClosing = false;
+  }
+}
+
+export function registerRedisShutdownHooks(): void {
+  if (shutdownHooksBound) {
+    return;
+  }
+  shutdownHooksBound = true;
+
+  const onSignal = (signal: string): void => {
+    void closeRedisConnection()
+      .catch((error: unknown) => {
+        logError('Redis close failed during signal handling', { signal, error });
+      })
+      .finally(() => {
+        logInfo(`Redis shutdown handler finished for ${signal}`);
+      });
+  };
+
+  process.once('SIGINT', () => {
+    onSignal('SIGINT');
   });
 
-  try {
-    await Promise.race([quitPromise, timeout]);
-    log.info('Redis disconnected gracefully');
-  } catch (err) {
-    log.warn({ err }, 'Redis quit failed; forcing disconnect');
-    client.disconnect();
-    throw err;
-  }
+  process.once('SIGTERM', () => {
+    onSignal('SIGTERM');
+  });
 }

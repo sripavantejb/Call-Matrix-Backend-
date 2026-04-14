@@ -9,6 +9,9 @@ const MAX_DELAY_MS = 30_000;
 
 let connectionListenersBound = false;
 
+/** True while `mongoose.disconnect()` is in progress so the `disconnected` event is not logged as an unexpected outage. */
+let mongoDisconnectingIntentionally = false;
+
 function bindConnectionListeners(logger: Logger): void {
   if (connectionListenersBound) {
     return;
@@ -32,7 +35,10 @@ function bindConnectionListeners(logger: Logger): void {
   });
 
   mongoose.connection.on('disconnected', () => {
-    log.warn('MongoDB disconnected');
+    if (mongoDisconnectingIntentionally) {
+      return;
+    }
+    log.warn('MongoDB disconnected unexpectedly');
   });
 }
 
@@ -51,6 +57,40 @@ function isMongoSrvDnsFailure(err: unknown): boolean {
     e.syscall === 'querySrv' &&
     (e.code === 'ECONNREFUSED' || e.code === 'ENOTFOUND' || e.code === 'ETIMEOUT')
   );
+}
+
+const AUTH_PLACEHOLDER_PATTERN =
+  /<db_password>|<password>|<db_username>|<username>/i;
+
+function isUnrecoverableMongoAuthError(err: unknown): boolean {
+  if (!err || typeof err !== 'object') {
+    return false;
+  }
+  const e = err as { code?: number; codeName?: string; message?: string };
+  if (e.code === 8000 || e.codeName === 'AtlasError') {
+    return true;
+  }
+  const msg = typeof e.message === 'string' ? e.message : '';
+  return /bad auth|authentication failed/i.test(msg);
+}
+
+/**
+ * Substitutes Atlas-style placeholders using env vars so passwords with
+ * reserved URI characters are encoded correctly.
+ */
+function resolveMongoConnectionUri(env: Env): string {
+  let uri = env.MONGO_URI;
+  const password = env.MONGO_PASSWORD;
+  if (password) {
+    uri = uri.replace(/<db_password>/gi, encodeURIComponent(password));
+    uri = uri.replace(/<password>/gi, encodeURIComponent(password));
+  }
+  const username = env.MONGO_USERNAME;
+  if (username) {
+    uri = uri.replace(/<db_username>/gi, encodeURIComponent(username));
+    uri = uri.replace(/<username>/gi, encodeURIComponent(username));
+  }
+  return uri;
 }
 
 /**
@@ -77,7 +117,14 @@ export async function connectMongo(env: Env, logger: Logger): Promise<void> {
   bindConnectionListeners(logger);
   const log = logger.child({ component: 'mongodb' });
   applyMongoDnsServers(env, log);
-  const uri = env.MONGO_URI.trim();
+  const uri = resolveMongoConnectionUri(env);
+
+  if (AUTH_PLACEHOLDER_PATTERN.test(uri)) {
+    log.error(
+      'MONGO_URI still contains placeholders such as <db_password>. Set MONGO_PASSWORD in .env (and MONGO_USERNAME if you use <db_username>), or paste the full URI from Atlas with your password URL-encoded.',
+    );
+    throw new Error('MONGO_URI authentication placeholders not resolved');
+  }
 
   if (!uri.startsWith('mongodb://') && !uri.startsWith('mongodb+srv://')) {
     log.error('MONGO_URI must start with mongodb:// or mongodb+srv://');
@@ -107,6 +154,13 @@ export async function connectMongo(env: Env, logger: Logger): Promise<void> {
       );
       return;
     } catch (err) {
+      if (isUnrecoverableMongoAuthError(err)) {
+        log.error(
+          { err },
+          'MongoDB authentication failed (wrong user/password, user missing in Atlas Database Access, or IP not allowed in Network Access). Retrying will not help; fix credentials and restart.',
+        );
+        throw err;
+      }
       if (isMongoSrvDnsFailure(err)) {
         log.error(
           'MongoDB SRV DNS lookup failed (querySrv). Set MONGO_DNS_SERVERS=8.8.8.8,1.1.1.1 in .env, use Atlas standard `mongodb://host1,host2,...` URI, or fix local DNS/VPN/firewall.',
@@ -135,6 +189,11 @@ export async function disconnectMongo(logger: Logger): Promise<void> {
   if (mongoose.connection.readyState === 0) {
     return;
   }
-  await mongoose.disconnect();
-  log.info('MongoDB disconnected');
+  mongoDisconnectingIntentionally = true;
+  try {
+    await mongoose.disconnect();
+    log.info('MongoDB disconnected');
+  } finally {
+    mongoDisconnectingIntentionally = false;
+  }
 }

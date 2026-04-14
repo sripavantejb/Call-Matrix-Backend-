@@ -1,9 +1,47 @@
 import { connectMongo, disconnectMongo } from './config/db.js';
-import { loadEnv } from './config/env.js';
-import { closeRedis, createRedisClient } from './config/redis.js';
+import { loadEnv, type Env } from './config/env.js';
+import {
+  closeRedisConnection,
+  redisClient,
+  registerRedisShutdownHooks,
+  setRedisLogger,
+} from './config/redis.js';
 import { buildApp, createLogger } from './app.js';
+import { formatKillHint, getListeningPids } from './utils/listen-port-hint.js';
 
 const SHUTDOWN_TIMEOUT_MS = 30_000;
+
+function isAddrInUse(err: unknown): err is NodeJS.ErrnoException & { port?: number } {
+  return (
+    typeof err === 'object' &&
+    err !== null &&
+    'code' in err &&
+    (err as NodeJS.ErrnoException).code === 'EADDRINUSE'
+  );
+}
+
+async function logPortInUseHint(
+  err: unknown,
+  env: Env,
+  logger: ReturnType<typeof createLogger>,
+): Promise<void> {
+  if (!isAddrInUse(err)) {
+    return;
+  }
+  const port =
+    typeof err.port === 'number' && Number.isFinite(err.port) ? err.port : env.PORT;
+  const pids = await getListeningPids(port);
+  const killHint = formatKillHint(pids);
+  logger.warn(
+    {
+      component: 'startup',
+      bindPort: port,
+      suspectedListeningPids: pids.length > 0 ? pids : undefined,
+      resolvePortConflictHint: killHint,
+    },
+    'address already in use — another process may be listening on this port',
+  );
+}
 
 let shuttingDown = false;
 
@@ -30,7 +68,7 @@ async function shutdown(
     log.info('HTTP server closed');
 
     await disconnectMongo(logger);
-    await closeRedis(server.redis, logger);
+    await closeRedisConnection();
   } catch (err) {
     log.error({ err }, 'error during shutdown');
     process.exit(1);
@@ -45,19 +83,24 @@ async function shutdown(
 async function main(): Promise<void> {
   const env = loadEnv();
   const logger = createLogger(env);
+  setRedisLogger(logger);
+  registerRedisShutdownHooks();
 
   await connectMongo(env, logger);
-  const redis = createRedisClient(env, logger);
-  await redis.ping();
-  const server = await buildApp(env, redis, logger);
+  const server = await buildApp(env, redisClient, logger);
 
   try {
-    await server.listen({ port: env.PORT, host: '0.0.0.0' });
-    logger.info({ port: env.PORT }, 'server listening');
+    await server.listen({ port: env.PORT, host: env.HOST });
+    logger.info({ port: env.PORT, host: env.HOST }, 'server listening');
   } catch (err) {
     logger.error({ err }, 'failed to start server');
+    await logPortInUseHint(err, env, logger);
+    logger.info(
+      { component: 'startup' },
+      'releasing MongoDB and Redis after failed bind (common cause: port already in use — stop the other process or change PORT)',
+    );
     await disconnectMongo(logger).catch(() => {});
-    await closeRedis(redis, logger).catch(() => {});
+    await closeRedisConnection().catch(() => {});
     process.exit(1);
   }
 
