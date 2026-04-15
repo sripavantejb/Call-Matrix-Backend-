@@ -5,7 +5,7 @@ Fastify + PostgreSQL (Prisma) + Redis (rate limiting) + JWT authentication with 
 ## Prerequisites
 
 - Node.js 20+
-- PostgreSQL 14+
+- PostgreSQL 14+ (or use Docker — see repo root `docker-compose.yml`: `docker compose up -d`)
 - Redis 6+
 
 ## Setup

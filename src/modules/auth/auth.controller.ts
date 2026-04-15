@@ -2,6 +2,7 @@ import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { z } from 'zod';
 import type { Env } from '../../config/env.js';
 import { appendSystemLog } from '../admin/system-log.service.js';
+import { isDatabaseConnectionError } from '../../utils/prismaErrors.js';
 import { signUserAccessToken } from '../../utils/jwt.js';
 import { parseBody } from '../../utils/validation.js';
 import { loginWithPassword } from './auth.service.js';
@@ -18,7 +19,20 @@ export function registerAuthControllers(app: FastifyInstance, env: Env): void {
       return;
     }
 
-    const result = await loginWithPassword(body.email, body.password, env);
+    let result;
+    try {
+      result = await loginWithPassword(body.email, body.password, env);
+    } catch (err) {
+      request.log.error({ err }, 'login database error');
+      if (isDatabaseConnectionError(err)) {
+        reply.status(503).send({
+          message:
+            'Database unavailable. Start PostgreSQL and ensure DATABASE_URL in backend/.env is correct. For Docker: docker compose up -d from the project root, then npm run db:migrate in backend.',
+        });
+        return;
+      }
+      throw err;
+    }
 
     if (!result.ok) {
       void appendSystemLog({

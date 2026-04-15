@@ -9,11 +9,12 @@ import {
 import { hashPassword } from '../../utils/hash.js';
 
 export async function createSaaSUser(
-  input: { name: string; email: string; company: string; plan: string },
+  input: { name: string; email: string; company: string; plan: string; password?: string },
   env: Env,
 ): Promise<{
   user: { id: string; name: string; email: string; company: string; plan: string };
-  password: string;
+  password?: string;
+  passwordSource: 'generated' | 'provided';
   apiKey: string;
   apiSecret: string;
 }> {
@@ -23,8 +24,10 @@ export async function createSaaSUser(
     throw Object.assign(new Error('Email already registered'), { code: 'EMAIL_TAKEN' });
   }
 
-  const password = generateReadablePassword();
-  const passwordHash = await hashPassword(password, env);
+  const provided = input.password?.trim();
+  const useProvidedPassword = Boolean(provided && provided.length > 0);
+  const plainForLogin = useProvidedPassword ? provided! : generateReadablePassword();
+  const passwordHash = await hashPassword(plainForLogin, env);
   const apiKey = generateApiKey();
   const apiSecret = generateApiSecret();
   const apiSecretHash = await hashPassword(apiSecret, env);
@@ -62,7 +65,8 @@ export async function createSaaSUser(
       company: user.company,
       plan: user.plan,
     },
-    password,
+    ...(useProvidedPassword ? {} : { password: plainForLogin }),
+    passwordSource: useProvidedPassword ? 'provided' : 'generated',
     apiKey,
     apiSecret,
   };

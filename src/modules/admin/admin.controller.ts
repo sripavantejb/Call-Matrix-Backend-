@@ -35,6 +35,8 @@ const createUserBodySchema = z.object({
   email: z.string().email(),
   company: z.string().min(1),
   plan: z.string().min(1),
+  /** Optional login password for the main app; omit to auto-generate. */
+  password: z.string().min(8).max(128).optional(),
 });
 
 const patchUserSchema = z
