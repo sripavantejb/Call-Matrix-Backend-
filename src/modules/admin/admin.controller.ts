@@ -78,6 +78,15 @@ const settingsPatchSchema = z.record(z.string(), z.unknown());
 
 const uuidParam = z.object({ id: z.string().uuid() });
 
+const usersResetPasswordBody = z.object({
+  userId: z.string().uuid(),
+});
+
+const usersStatusBody = z.object({
+  userId: z.string().uuid(),
+  status: z.enum(['active', 'disabled']),
+});
+
 const credentialCreateBody = z.object({
   user_id: z.string().uuid(),
 });
@@ -134,6 +143,44 @@ export function registerAdminControllers(app: FastifyInstance, env: Env): void {
   app.get('/admin/users', async (_request: FastifyRequest, reply: FastifyReply) => {
     const users = await listAllUsers();
     reply.send(users);
+  });
+
+  app.post('/admin/users/reset-password', async (request: FastifyRequest, reply: FastifyReply) => {
+    const body = parseBody(usersResetPasswordBody, request.body, reply);
+    if (body === null) return;
+    const target = await prisma.user.findUnique({
+      where: { id: body.userId },
+      select: { id: true, role: true },
+    });
+    if (!target) {
+      reply.status(404).send({ message: 'User not found' });
+      return;
+    }
+    if (target.role === 'admin') {
+      reply.status(400).send({ message: 'Cannot reset password for platform admin accounts' });
+      return;
+    }
+    const { password } = await resetUserPassword(body.userId, env);
+    reply.send({ password });
+  });
+
+  app.patch('/admin/users/status', async (request: FastifyRequest, reply: FastifyReply) => {
+    const body = parseBody(usersStatusBody, request.body, reply);
+    if (body === null) return;
+    const target = await prisma.user.findUnique({
+      where: { id: body.userId },
+      select: { id: true, role: true },
+    });
+    if (!target) {
+      reply.status(404).send({ message: 'User not found' });
+      return;
+    }
+    if (target.role === 'admin') {
+      reply.status(400).send({ message: 'Cannot change status for platform admin accounts' });
+      return;
+    }
+    await setUserStatus(body.userId, body.status);
+    reply.send({ ok: true });
   });
 
   app.patch('/admin/users/:id', async (request: FastifyRequest, reply: FastifyReply) => {

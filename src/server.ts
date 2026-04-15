@@ -103,12 +103,40 @@ async function main(): Promise<void> {
 
   const server = await buildApp(env, logger);
 
-  try {
-    await server.listen({ port: env.PORT, host: env.HOST });
-    logger.info({ port: env.PORT, host: env.HOST }, 'server listening');
-  } catch (err) {
-    logger.error({ err }, 'failed to start server');
-    await logPortInUseHint(err, env, logger);
+  const maxPortAttempts = env.NODE_ENV === 'development' ? 10 : 1;
+  let listenErr: unknown;
+
+  for (let offset = 0; offset < maxPortAttempts; offset++) {
+    const tryPort = env.PORT + offset;
+    try {
+      await server.listen({ port: tryPort, host: env.HOST });
+      if (offset > 0) {
+        logger.warn(
+          {
+            configuredPort: env.PORT,
+            boundPort: tryPort,
+          },
+          'listening on alternate port (configured port was busy); point VITE_API_URL at this port or stop the other process',
+        );
+      }
+      logger.info({ port: tryPort, host: env.HOST }, 'server listening');
+      listenErr = undefined;
+      break;
+    } catch (err) {
+      listenErr = err;
+      if (!isAddrInUse(err)) {
+        break;
+      }
+      if (offset === maxPortAttempts - 1) {
+        break;
+      }
+      logger.warn({ port: tryPort, tryNext: tryPort + 1 }, 'port busy, retrying');
+    }
+  }
+
+  if (listenErr !== undefined) {
+    logger.error({ err: listenErr }, 'failed to start server');
+    await logPortInUseHint(listenErr, env, logger);
     await disconnectPrisma().catch(() => {});
     await closeRedisConnection().catch(() => {});
     process.exit(1);
