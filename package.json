@@ -1,45 +1,49 @@
 {
-  "name": "call-matrix-backend-",
+  "name": "call-matrix-backend",
   "version": "1.0.0",
-  "description": "",
+  "description": "Call Matrix API — Fastify, Prisma, Redis",
   "type": "module",
   "main": "dist/server.js",
   "scripts": {
-    "build": "tsc",
-    "start": "node dist/server.js",
     "dev": "tsx watch src/server.ts",
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "build": "prisma generate && tsc",
+    "start": "node dist/server.js",
+    "lint": "eslint src",
+    "db:generate": "prisma generate",
+    "db:migrate": "prisma migrate dev",
+    "db:push": "prisma db push",
+    "db:seed": "prisma db seed"
+  },
+  "dependencies": {
+    "@fastify/cors": "^11.0.0",
+    "@fastify/helmet": "^13.0.0",
+    "@fastify/jwt": "^9.0.0",
+    "@fastify/rate-limit": "^10.2.0",
+    "@prisma/client": "^6.19.0",
+    "bcrypt": "^5.1.1",
+    "dotenv": "^17.4.2",
+    "fastify": "^5.2.0",
+    "fastify-plugin": "^5.0.1",
+    "ioredis": "^5.8.2",
+    "pino": "^10.1.0",
+    "zod": "^3.24.2"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.39.4",
+    "@types/bcrypt": "^5.0.2",
+    "@types/node": "^24.10.1",
+    "eslint": "^9.39.4",
+    "pino-pretty": "^13.1.2",
+    "prisma": "^6.19.0",
+    "tsx": "^4.20.6",
+    "typescript": "^5.9.3",
+    "typescript-eslint": "^8.46.4"
   },
   "engines": {
     "node": ">=20"
   },
-  "repository": {
-    "type": "git",
-    "url": "git+https://github.com/sripavantejb/Call-Matrix-Backend-.git"
-  },
-  "keywords": [],
-  "author": "",
   "license": "ISC",
-  "bugs": {
-    "url": "https://github.com/sripavantejb/Call-Matrix-Backend-/issues"
-  },
-  "homepage": "https://github.com/sripavantejb/Call-Matrix-Backend-#readme",
-  "dependencies": {
-    "@fastify/cors": "^11.0.0",
-    "@fastify/helmet": "^13.0.0",
-    "@fastify/rate-limit": "^10.2.0",
-    "dotenv": "^17.4.2",
-    "fastify": "^5.2.0",
-    "fastify-plugin": "^5.0.1",
-    "ioredis": "^5.6.0",
-    "mongoose": "^9.4.1",
-    "pino": "^9.6.0",
-    "zod": "^3.24.2"
-  },
-  "devDependencies": {
-    "@types/node": "^22.13.10",
-    "pino-pretty": "^13.0.0",
-    "tsx": "^4.19.3",
-    "typescript": "^5.8.2"
+  "prisma": {
+    "seed": "tsx prisma/seed.ts"
   }
 }

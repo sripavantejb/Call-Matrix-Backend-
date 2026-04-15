@@ -1,121 +1,135 @@
 import { randomUUID } from 'node:crypto';
+import cors from '@fastify/cors';
+import helmet from '@fastify/helmet';
+import jwt from '@fastify/jwt';
+import rateLimit from '@fastify/rate-limit';
+import type { FastifyError } from 'fastify';
 import Fastify from 'fastify';
-import { Redis } from 'ioredis';
-import mongoose from 'mongoose';
-import pino from 'pino';
 import type { Logger } from 'pino';
+import { prisma } from './config/database.js';
 import type { Env } from './config/env.js';
-import plugins from './plugins/index.js';
-import { getCache, setCache } from './utils/cache.js';
-import { sendError, sendSuccess } from './utils/response.js';
+import { redisClient } from './config/redis.js';
+import { authMiddleware } from './middleware/authMiddleware.js';
+import { requireRole } from './middleware/roleMiddleware.js';
+import { adminRoutes } from './modules/admin/admin.routes.js';
+import { agentsRoutes } from './modules/agents/agents.routes.js';
+import { authRoutes } from './modules/auth/auth.routes.js';
+import { callsRoutes } from './modules/calls/calls.routes.js';
+import { campaignsRoutes } from './modules/campaigns/campaigns.routes.js';
+import { usersRoutes } from './modules/users/users.routes.js';
 
-const mongoTestSchema = new mongoose.Schema({
-  name: { type: String, required: true },
-});
-
-function getMongoTestModel(): mongoose.Model<{ name: string }> {
+function isFastifyError(err: unknown): err is FastifyError {
   return (
-    (mongoose.models.Test as mongoose.Model<{ name: string }> | undefined) ??
-    mongoose.model<{ name: string }>('Test', mongoTestSchema)
+    typeof err === 'object' &&
+    err !== null &&
+    'statusCode' in err &&
+    typeof (err as FastifyError).statusCode === 'number'
   );
 }
 
-declare module 'fastify' {
-  interface FastifyInstance {
-    redis: InstanceType<typeof Redis> | null;
-  }
-}
-
-export function createLogger(env: Env): Logger {
-  if (env.NODE_ENV === 'development') {
-    return pino({
-      level: 'debug',
-      transport: {
-        target: 'pino-pretty',
-        options: {
-          colorize: true,
-          translateTime: 'SYS:standard',
-        },
-      },
-    });
-  }
-  return pino({ level: 'info' });
-}
-
-export async function buildApp(
-  env: Env,
-  redis: InstanceType<typeof Redis> | null,
-  logger: Logger,
-) {
-  const fastify = Fastify({
+export async function buildApp(env: Env, logger: Logger) {
+  const app = Fastify({
     loggerInstance: logger,
     requestIdHeader: 'x-request-id',
     genReqId: () => randomUUID(),
   });
 
-  fastify.decorate('redis', redis);
+  await app.register(helmet, { global: true });
 
-  await fastify.register(plugins, { env });
+  const corsOrigin =
+    env.CORS_ORIGIN !== undefined
+      ? env.CORS_ORIGIN
+      : env.NODE_ENV === 'development';
 
-  fastify.get('/health', async (_request, reply) => {
-    const mongo = mongoose.connection.readyState === 1;
-    const redisOk = redis !== null && redis.status === 'ready';
-    sendSuccess(
-      reply,
-      {
-        server: 'ok',
-        mongo,
-        redis: redisOk,
-      },
-      'OK',
-    );
+  await app.register(cors, {
+    origin: corsOrigin,
   });
 
-  fastify.get('/mongo-test', async (request, reply) => {
+  await app.register(jwt, {
+    secret: env.JWT_SECRET,
+    sign: {
+      expiresIn: env.JWT_EXPIRES_IN,
+    },
+  });
+
+  app.get('/health', async () => {
+    let dbOk = false;
     try {
-      const Test = getMongoTestModel();
-      const created = await Test.create({ name: 'test' });
-      const doc = await Test.findOne({ _id: created._id }).lean();
-      sendSuccess(reply, doc, 'Mongo test success');
-    } catch (err) {
-      request.log.error({ err }, 'mongo-test failed');
-      sendError(
-        reply,
-        err instanceof Error ? err.message : 'Mongo test failed',
-        'MONGO_TEST_ERROR',
-        err instanceof Error ? { message: err.message, stack: err.stack } : err,
-        500,
-      );
+      await prisma.$queryRaw`SELECT 1`;
+      dbOk = true;
+    } catch {
+      dbOk = false;
     }
+    const redisOk = redisClient.status === 'ready';
+    return {
+      status: 'ok',
+      database: dbOk,
+      redis: redisOk,
+    };
   });
 
-  fastify.get('/redis-test', async (request, reply) => {
-    const key = typeof request.query === 'object' && request.query !== null
-      ? (request.query as Record<string, unknown>).key
-      : undefined;
-    const ttl = typeof request.query === 'object' && request.query !== null
-      ? (request.query as Record<string, unknown>).ttl
-      : undefined;
+  await app.register(async (authScope) => {
+    await authScope.register(rateLimit, {
+      max: env.AUTH_RATE_LIMIT_MAX,
+      timeWindow: env.AUTH_RATE_LIMIT_WINDOW_MS,
+      redis: redisClient,
+      nameSpace: 'rl:auth:',
+    });
+    await authRoutes(authScope, env);
+  });
 
-    const cacheKey = typeof key === 'string' && key.trim() !== '' ? key : 'redis:test:key';
-    const ttlSeconds = typeof ttl === 'string' ? Number.parseInt(ttl, 10) : 5;
-    const safeTtl = Number.isFinite(ttlSeconds) && ttlSeconds > 0 ? ttlSeconds : 5;
+  await app.register(async (api) => {
+    await api.register(rateLimit, {
+      max: env.RATE_LIMIT_MAX,
+      timeWindow: env.RATE_LIMIT_WINDOW_MS,
+      redis: redisClient,
+      nameSpace: 'rl:api:',
+    });
 
-    const cached = await getCache<{ value: string; cachedAt: string }>(cacheKey);
-    if (cached) {
-      request.log.info({ cacheKey }, 'CACHE HIT');
-      sendSuccess(reply, { source: 'cache', ...cached }, 'OK');
+    api.addHook('preHandler', authMiddleware);
+
+    await usersRoutes(api);
+
+    await api.register(async (adminScope) => {
+      adminScope.addHook('preHandler', requireRole('admin'));
+      await adminRoutes(adminScope, env);
+    });
+
+    await api.register(async (tenantScope) => {
+      tenantScope.addHook('preHandler', requireRole('user'));
+      await agentsRoutes(tenantScope);
+      await campaignsRoutes(tenantScope);
+      await callsRoutes(tenantScope);
+    });
+  });
+
+  app.setErrorHandler((error, request, reply) => {
+    request.log.error({ err: error }, 'request failed');
+
+    const statusCode = isFastifyError(error) ? (error.statusCode ?? 500) : 500;
+
+    if (statusCode === 429) {
+      reply.status(429).send({ message: 'Too many requests' });
       return;
     }
 
-    request.log.info({ cacheKey }, 'CACHE MISS');
-    const payload = {
-      value: 'some_value',
-      cachedAt: new Date().toISOString(),
-    };
-    await setCache(cacheKey, payload, safeTtl);
-    sendSuccess(reply, { source: 'db-fallback', ...payload }, 'OK');
+    if (statusCode >= 400 && statusCode < 500) {
+      const message = error instanceof Error ? error.message : 'Request failed';
+      reply.status(statusCode).send({ message });
+      return;
+    }
+
+    if (env.NODE_ENV === 'production') {
+      reply.status(500).send({ message: 'Internal Server Error' });
+      return;
+    }
+
+    const wrapped = error instanceof Error ? error : new Error(String(error));
+    reply.status(500).send({
+      message: wrapped.message,
+      stack: wrapped.stack,
+    });
   });
 
-  return fastify;
+  return app;
 }

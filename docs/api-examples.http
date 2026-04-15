@@ -1,0 +1,199 @@
+### Call Matrix API — example requests (VS Code REST Client / similar)
+@base = http://localhost:3000
+@token = paste_jwt_here
+
+### Health
+GET {{base}}/health
+
+### Login (returns token + user)
+POST {{base}}/auth/login
+Content-Type: application/json
+
+{
+  "email": "admin@example.com",
+  "password": "your-password"
+}
+
+### User profile (any authenticated role)
+GET {{base}}/user/profile
+Authorization: Bearer {{token}}
+
+### Update profile name
+PATCH {{base}}/user/profile
+Content-Type: application/json
+Authorization: Bearer {{token}}
+
+{
+  "name": "New Name"
+}
+
+### Admin: dashboard aggregates
+GET {{base}}/admin/dashboard
+Authorization: Bearer {{token}}
+
+### Admin: create SaaS user (canonical + legacy alias)
+POST {{base}}/admin/users/create
+Content-Type: application/json
+Authorization: Bearer {{token}}
+
+{
+  "name": "John Doe",
+  "email": "john@company.com",
+  "company": "Acme Inc",
+  "plan": "pro"
+}
+
+### Admin: create user (legacy alias)
+POST {{base}}/admin/create-user
+Content-Type: application/json
+Authorization: Bearer {{token}}
+
+{
+  "name": "John Doe",
+  "email": "john2@company.com",
+  "company": "Acme Inc",
+  "plan": "pro"
+}
+
+### Admin: list users
+GET {{base}}/admin/users
+Authorization: Bearer {{token}}
+
+### Admin: patch user (name, company, plan, status, role)
+PATCH {{base}}/admin/users/00000000-0000-0000-0000-000000000000
+Content-Type: application/json
+Authorization: Bearer {{token}}
+
+{
+  "plan": "enterprise",
+  "status": "active"
+}
+
+### Admin: delete user (canonical)
+DELETE {{base}}/admin/users/00000000-0000-0000-0000-000000000000
+Authorization: Bearer {{token}}
+
+### Admin: create additional API credential for user
+POST {{base}}/admin/credentials/create
+Content-Type: application/json
+Authorization: Bearer {{token}}
+
+{
+  "user_id": "00000000-0000-0000-0000-000000000000"
+}
+
+### Admin: list credentials (add ?includeRevoked=true for all)
+GET {{base}}/admin/credentials
+Authorization: Bearer {{token}}
+
+### Admin: revoke credential
+DELETE {{base}}/admin/credentials/00000000-0000-0000-0000-000000000000
+Authorization: Bearer {{token}}
+
+### Admin: regenerate API keys for user
+POST {{base}}/admin/api/regenerate
+Content-Type: application/json
+Authorization: Bearer {{token}}
+
+{
+  "user_id": "00000000-0000-0000-0000-000000000000"
+}
+
+### Admin: platform agents / campaigns / calls
+GET {{base}}/admin/agents
+Authorization: Bearer {{token}}
+
+GET {{base}}/admin/campaigns
+Authorization: Bearer {{token}}
+
+GET {{base}}/admin/calls?from=2026-01-01T00:00:00.000Z&to=2026-12-31T23:59:59.999Z
+Authorization: Bearer {{token}}
+
+### Admin: analytics
+GET {{base}}/admin/analytics
+Authorization: Bearer {{token}}
+
+### Admin: system logs
+GET {{base}}/admin/logs?page=1&limit=20
+Authorization: Bearer {{token}}
+
+### Admin: platform settings
+GET {{base}}/admin/settings
+Authorization: Bearer {{token}}
+
+PATCH {{base}}/admin/settings
+Content-Type: application/json
+Authorization: Bearer {{token}}
+
+{
+  "apiLimits": { "requestsPerMinute": 2000 }
+}
+
+### Admin: disable user
+PATCH {{base}}/admin/user/00000000-0000-0000-0000-000000000000/status
+Content-Type: application/json
+Authorization: Bearer {{token}}
+
+{
+  "status": "disabled"
+}
+
+### Admin: reset password (returns new temporary password)
+POST {{base}}/admin/user/00000000-0000-0000-0000-000000000000/reset-password
+Authorization: Bearer {{token}}
+
+### Admin: usage analytics
+GET {{base}}/admin/usage
+Authorization: Bearer {{token}}
+
+### Admin: usage with date range (optional)
+GET {{base}}/admin/usage?from=2026-01-01T00:00:00.000Z&to=2026-12-31T23:59:59.999Z
+Authorization: Bearer {{token}}
+
+### Tenant: create agent (role must be "user")
+POST {{base}}/agents/create
+Content-Type: application/json
+Authorization: Bearer {{token}}
+
+{
+  "agentName": "Support Bot",
+  "prompt": "You are a helpful assistant.",
+  "voice": "alloy",
+  "language": "en-US"
+}
+
+### Tenant: list agents
+GET {{base}}/agents
+Authorization: Bearer {{token}}
+
+### Tenant: delete agent
+DELETE {{base}}/agents/00000000-0000-0000-0000-000000000000
+Authorization: Bearer {{token}}
+
+### Tenant: create campaign
+POST {{base}}/campaign/create
+Content-Type: application/json
+Authorization: Bearer {{token}}
+
+{
+  "campaignName": "Q1 outreach",
+  "agentId": "00000000-0000-0000-0000-000000000000"
+}
+
+### Tenant: list campaigns
+GET {{base}}/campaigns
+Authorization: Bearer {{token}}
+
+### Tenant: start / stop campaign
+POST {{base}}/campaign/00000000-0000-0000-0000-000000000000/start
+Authorization: Bearer {{token}}
+
+POST {{base}}/campaign/00000000-0000-0000-0000-000000000000/stop
+Authorization: Bearer {{token}}
+
+### Tenant: call logs
+GET {{base}}/calls
+Authorization: Bearer {{token}}
+
+GET {{base}}/calls?campaignId=00000000-0000-0000-0000-000000000000&from=2026-01-01T00:00:00.000Z&to=2026-12-31T23:59:59.999Z
+Authorization: Bearer {{token}}

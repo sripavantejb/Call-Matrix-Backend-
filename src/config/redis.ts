@@ -54,10 +54,9 @@ function getRetryDelay(times: number): number {
   );
 }
 
-function createClient(): InstanceType<typeof Redis> | null {
+function createClient(): Redis {
   if (!redisUrl) {
-    logWarn('REDIS_URL is not configured; cache layer is disabled');
-    return null;
+    throw new Error('REDIS_URL is not configured');
   }
 
   const client = new Redis(redisUrl, {
@@ -84,15 +83,15 @@ function createClient(): InstanceType<typeof Redis> | null {
   });
 
   void client.connect().catch((error: unknown) => {
-    logError('Initial Redis connect failed; continuing without cache', { error });
+    logError('Initial Redis connect failed', { error });
   });
 
   return client;
 }
 
-export const redisClient: InstanceType<typeof Redis> | null = createClient();
+export const redisClient: Redis = createClient();
 
-async function quitWithTimeout(client: InstanceType<typeof Redis>): Promise<void> {
+async function quitWithTimeout(client: Redis): Promise<void> {
   const timeoutPromise = new Promise<never>((_, reject) => {
     setTimeout(() => {
       reject(new Error(`Redis quit timed out after ${REDIS_QUIT_TIMEOUT_MS}ms`));
@@ -107,7 +106,7 @@ export function setRedisLogger(logger: Logger): void {
 }
 
 export async function closeRedisConnection(): Promise<void> {
-  if (!redisClient || redisClient.status === 'end' || isClosing) {
+  if (redisClient.status === 'end' || isClosing) {
     return;
   }
 

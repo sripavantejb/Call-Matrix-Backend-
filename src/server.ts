@@ -1,12 +1,13 @@
-import { connectMongo, disconnectMongo } from './config/db.js';
-import { loadEnv, type Env } from './config/env.js';
+import { loadEnv } from './config/env.js';
+import { createLogger } from './config/logger.js';
+import { disconnectPrisma } from './config/database.js';
 import {
   closeRedisConnection,
   redisClient,
   registerRedisShutdownHooks,
   setRedisLogger,
 } from './config/redis.js';
-import { buildApp, createLogger } from './app.js';
+import { buildApp } from './app.js';
 import { formatKillHint, getListeningPids } from './utils/listen-port-hint.js';
 
 const SHUTDOWN_TIMEOUT_MS = 30_000;
@@ -22,7 +23,7 @@ function isAddrInUse(err: unknown): err is NodeJS.ErrnoException & { port?: numb
 
 async function logPortInUseHint(
   err: unknown,
-  env: Env,
+  env: ReturnType<typeof loadEnv>,
   logger: ReturnType<typeof createLogger>,
 ): Promise<void> {
   if (!isAddrInUse(err)) {
@@ -67,7 +68,7 @@ async function shutdown(
     await server.close();
     log.info('HTTP server closed');
 
-    await disconnectMongo(logger);
+    await disconnectPrisma();
     await closeRedisConnection();
   } catch (err) {
     log.error({ err }, 'error during shutdown');
@@ -80,15 +81,27 @@ async function shutdown(
   process.exit(0);
 }
 
+async function verifyRedis(logger: ReturnType<typeof createLogger>): Promise<void> {
+  const log = logger.child({ component: 'redis' });
+  try {
+    await redisClient.ping();
+    log.info('Redis ping ok');
+  } catch (err) {
+    log.error({ err }, 'Redis ping failed — rate limiting requires Redis');
+    throw err;
+  }
+}
+
 async function main(): Promise<void> {
   const env = loadEnv();
   const logger = createLogger(env);
-  logger.info({ env: env.NODE_ENV }, 'Environment loaded');
+  logger.info({ env: env.NODE_ENV }, 'environment loaded');
   setRedisLogger(logger);
   registerRedisShutdownHooks();
 
-  await connectMongo(env, logger);
-  const server = await buildApp(env, redisClient, logger);
+  await verifyRedis(logger);
+
+  const server = await buildApp(env, logger);
 
   try {
     await server.listen({ port: env.PORT, host: env.HOST });
@@ -96,11 +109,7 @@ async function main(): Promise<void> {
   } catch (err) {
     logger.error({ err }, 'failed to start server');
     await logPortInUseHint(err, env, logger);
-    logger.info(
-      { component: 'startup' },
-      'releasing MongoDB and Redis after failed bind (common cause: port already in use — stop the other process or change PORT)',
-    );
-    await disconnectMongo(logger).catch(() => {});
+    await disconnectPrisma().catch(() => {});
     await closeRedisConnection().catch(() => {});
     process.exit(1);
   }
